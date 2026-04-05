@@ -1,0 +1,59 @@
+# system_config.yaml
+# cango_master 연동 버전
+
+topics:
+  # master <-> llm
+  master2llm:   /cango_master/master2llm
+  llm2master:   /cango_master/llm2master
+
+  # STT 결과: node_a_voice -> llm
+  stt_result:   /stt_result
+
+  # TTS 출력 + SLAM 트리거: 마스터의 ~/master2sound와 동일
+  # - 마스터가 발행: ordered_num=1,2,3 (SLAM 트리거)
+  # - LLM이 발행: ordered_num=4 (TTS 커스텀 텍스트)
+  # - LLM은 on_sound_trigger에서 ordered_num==4 수신 시 무시 (무한루프 방지)
+  tts_input:    /cango_master/master2sound
+  sound_trigger: /cango_master/master2sound
+
+  # TTS 중단 신호: node_b → node_a
+  tts_stop: /cango_master/tts_stop
+
+  # SLAM 실시간 위치
+  navi2master: /cango_master/navi2master
+
+speech:
+  language: ko-KR
+  energy_threshold: 3000
+  pause_threshold: 1.2
+
+navigation:
+  start_position: "hall_203"
+  map_file: null
+
+llm:
+  provider: openai
+  model_openai: gpt-4o-mini
+  model_gemini: gemini-1.5-pro
+  max_tokens: 200
+  temperature: 0.1
+
+wake_word:
+  enabled: false
+  keyword: "캔고야"
+  sensitivity: 0.8
+  timeout_sec: 10
+  confirm_sound: false
+
+emergency_keywords:
+  - 정지
+  - 멈춰
+  - 위험
+  - 스톱
+
+robot_commands:
+  stop: "STOP"
+  resume: "RESUME"
+  return_to_start: "RETURN_TO_START"
+  set_destination: "NAVIGATE:{node_id}"
+  change_direction: "DIRECTION:{direction}"

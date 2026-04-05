@@ -1,0 +1,58 @@
+{
+  "map_metadata": {
+    "map_name": "Department_Building_Full_Map",
+    "description": "Includes all rooms, facilities, and the central hall logic."
+  },
+  "nodes": [
+    { "id": "hall_203", "type": "복도", "coords": [2, 2], "label": "203호 앞" },
+    { "id": "hall_204", "type": "복도", "coords": [2, 4], "label": "204호 앞" },
+    { "id": "hall_205", "type": "복도", "coords": [2, 6], "label": "205호 앞" },
+    { "id": "hall_205_mid", "type": "복도", "coords": [8, 6], "label": "엘리베이터 앞 중앙복도" },
+    { "id": "hall_205_right", "type": "복도", "coords": [18, 6], "label": "학군단 앞 복도 끝" },
+    { "id": "hall_206", "type": "복도", "coords": [2, 8], "label": "206호 앞" },
+    { "id": "hall_207", "type": "복도", "coords": [2, 10], "label": "207호 앞" },
+    { "id": "hall_208", "type": "복도", "coords": [2, 12], "label": "208호 앞" },
+    { "id": "hall_toilet", "type": "복도", "coords": [6, 11], "label": "화장실 앞" },
+    { "id": "hall_210", "type": "복도", "coords": [2, 16], "label": "210호 앞" },
+    { "id": "hall_210_mid", "type": "복도", "coords": [8, 16], "label": "회의실 구역 중앙복도" },
+    { "id": "hall_top", "type": "복도", "coords": [2, 22], "label": "211~216호 접근금지 구역" },
+    { "id": "path_slope", "type": "내리막길", "coords": [8, 4], "label": "중앙 내리막길" },
+    { "id": "path_stairs", "type": "계단", "coords": [12, 4], "label": "중앙 계단" },
+    { "id": "central_hall", "type": "교차로", "coords": [10, 2], "label": "1층 중앙 홀" }
+  ],
+  "edges": [
+    { "from": "hall_203", "to": "hall_204", "description": "메인 세로 복도" },
+    { "from": "hall_204", "to": "hall_205", "description": "메인 세로 복도" },
+    { "from": "hall_205", "to": "hall_205_mid", "description": "가로 복도" },
+    { "from": "hall_205_mid", "to": "hall_205_right", "description": "학군단 가로 복도" },
+    { "from": "hall_205", "to": "hall_206", "description": "메인 세로 복도" },
+    { "from": "hall_206", "to": "hall_207", "description": "메인 세로 복도" },
+    { "from": "hall_207", "to": "hall_208", "description": "메인 세로 복도" },
+    { "from": "hall_208", "to": "hall_toilet", "description": "화장실 진입 복도" },
+    { "from": "hall_208", "to": "hall_210", "description": "메인 세로 복도" },
+    { "from": "hall_210", "to": "hall_210_mid", "description": "회의실 가로 복도" },
+    { "from": "hall_210", "to": "hall_top", "description": "메인 세로 복도" },
+    { "from": "hall_205_mid", "to": "path_slope", "description": "내리막길 연결" },
+    { "from": "path_slope", "to": "central_hall", "description": "내리막길" },
+    { "from": "hall_205_mid", "to": "path_stairs", "description": "계단 연결" },
+    { "from": "path_stairs", "to": "central_hall", "description": "계단" }
+  ],
+  "features": [
+    { "name": "203호", "type": "강의실", "feature_coords": [1, 2], "connected_node": "hall_203" },
+    { "name": "204호", "type": "강의실", "feature_coords": [1, 4], "connected_node": "hall_204" },
+    { "name": "205호", "type": "강의실", "feature_coords": [1, 6], "connected_node": "hall_205" },
+    { "name": "206호", "type": "강의실", "feature_coords": [1, 8], "connected_node": "hall_206" },
+    { "name": "207호", "type": "강의실", "feature_coords": [1, 10], "connected_node": "hall_207" },
+    { "name": "208호", "type": "강의실", "feature_coords": [1, 12], "connected_node": "hall_208" },
+    { "name": "210호", "type": "강의실", "feature_coords": [1, 16], "connected_node": "hall_210" },
+    { "name": "ROTC학군단", "type": "사무실", "feature_coords": [18, 7], "connected_node": "hall_205_right" },
+    { "name": "회의실1", "type": "회의실", "feature_coords": [8, 17], "connected_node": "hall_210_mid" },
+    { "name": "회의실2", "type": "회의실", "feature_coords": [10, 15], "connected_node": "hall_210_mid" },
+    { "name": "회의실3", "type": "회의실", "feature_coords": [14, 17], "connected_node": "hall_210_mid" },
+    { "name": "CU 편의점", "type": "편의점", "feature_coords": [2, 0], "connected_node": "hall_203" },
+    { "name": "엘리베이터", "type": "엘리베이터", "feature_coords": [10, 7], "connected_node": "hall_205_mid" },
+    { "name": "화장실", "type": "화장실", "feature_coords": [9, 10], "connected_node": "hall_toilet" },
+    { "name": "외부 출입구", "type": "출입구", "feature_coords": [10, 0], "connected_node": "central_hall" },
+    { "name": "관리실", "type": "사무실", "feature_coords": [4, 1], "connected_node": "hall_203" }
+  ]
+}

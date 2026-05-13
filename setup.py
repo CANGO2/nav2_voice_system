@@ -14,6 +14,8 @@ setup(
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
         (os.path.join('share', package_name, 'maps'),
          glob('nav2_voice_system/maps/*.yaml')),
+        (os.path.join('share', package_name, 'launch'),
+         glob('nav2_voice_system/launch/*.py')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -21,9 +23,7 @@ setup(
     description='Voice navigation system with LLM API',
     entry_points={
         'console_scripts': [
-            # 노트북 B에서 실행
             'navigation_server = nav2_voice_system.node_b_server:main',
-            # 노트북 A에서 실행
             'voice_client = nav2_voice_system.node_a_voice:main',
         ],
     },

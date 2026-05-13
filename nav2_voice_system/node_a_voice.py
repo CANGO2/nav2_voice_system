@@ -1,5 +1,9 @@
 """
-노트북 A (또는 NUC) - 음성 입출력 담당
+NUC용 통합 노드 - 음성 입출력 + 마스터 중계
+
+역할:
+1. 음성 입출력 (STT/TTS)
+2. 마스터 ↔ 노트북B 토픽 중계 (ROS2 DDS ↔ rosbridge WebSocket)
 
 """
 
@@ -13,13 +17,14 @@ import time
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
-from cango_msgs.msg import SoundRequest
+from cango_msgs.msg import LlmRequest, SoundRequest
 
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "1"
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from contextlib import contextmanager
+import roslibpy
 
 sys.path.insert(0, os.path.dirname(__file__))
 from wake_word_detector import WakeWordDetector
@@ -37,11 +42,10 @@ def suppress_stderr():
         devnull.close()
 
 
-class VoiceClientNode(Node):
+class NucNode(Node):
     def __init__(self):
-        super().__init__('voice_client')
+        super().__init__('nuc_node')
 
-        # ── 설정 로드 ─────────────────────────────────────
         config_path = os.path.join(
             os.path.dirname(__file__), '..', 'config', 'system_config.yaml'
         )
@@ -51,11 +55,19 @@ class VoiceClientNode(Node):
         topics = self.cfg['topics']
         speech_cfg = self.cfg.get('speech', {})
         self.emergency_keywords = self.cfg.get('emergency_keywords', ['정지', '멈춰'])
+        self.language = speech_cfg.get('language', 'ko-KR')
 
-        # ── Wake Word 초기화 ──────────────────────────────
         self.wake_word = WakeWordDetector(self.cfg)
 
-        # ── 오디오 초기화 (실패해도 계속 동작) ───────────
+        # ── 상태 변수 ─────────────────────────────────────
+        self.is_speaking = False
+        self.interrupt_flag = False
+        self.listening = True
+        self.speech_queue = queue.Queue()
+        self.tts_queue = queue.Queue()
+        self.initialized = False  # 마스터에서 첫 위치 받았는지
+
+        # ── 오디오 초기화 ─────────────────────────────────
         self.audio_available = False
         self.stt_available = False
 
@@ -71,7 +83,7 @@ class VoiceClientNode(Node):
             self.stt_available = True
             self.get_logger().info("[STT] 마이크 초기화 완료")
         except Exception as e:
-            self.get_logger().warn(f"[STT] 마이크 초기화 실패 (텍스트 모드로 동작): {e}")
+            self.get_logger().warn(f"[STT] 마이크 초기화 실패: {e}")
 
         try:
             import pygame
@@ -81,31 +93,70 @@ class VoiceClientNode(Node):
             self.audio_available = True
             self.get_logger().info("[TTS] 스피커 초기화 완료")
         except Exception as e:
-            self.get_logger().warn(f"[TTS] 스피커 초기화 실패 (텍스트 출력으로 동작): {e}")
+            self.get_logger().warn(f"[TTS] 스피커 초기화 실패: {e}")
 
-        self.language = speech_cfg.get('language', 'ko-KR')
+        # ── rosbridge 연결 ────────────────────────────────
+        ros_host = self.cfg.get('rosbridge', {}).get('host', '100.95.77.76')
+        ros_port = self.cfg.get('rosbridge', {}).get('port', 9090)
 
-        # ── 상태 변수 ─────────────────────────────────────
-        self.is_speaking = False
-        self.interrupt_flag = False
-        self.listening = True
-        self.speech_queue = queue.Queue()
-        self.tts_queue = queue.Queue()
+        self.get_logger().info(f"[rosbridge] {ros_host}:{ros_port} 연결 중...")
+        self.ros_client = roslibpy.Ros(host=ros_host, port=ros_port)
+        self.ros_client.run()
 
-        # ── ROS2 구독/발행 ────────────────────────────────
-        # tts_input: LLM→A 방향 (node_b_server의 pub_sound 토픽과 일치해야 함)
-        tts_topic = topics.get('tts_input', '/cango_master/llm2sound')
-        self.create_subscription(
-            SoundRequest, tts_topic, self.on_tts_input, 10
+        if self.ros_client.is_connected:
+            self.get_logger().info("[rosbridge] 연결 완료!")
+        else:
+            self.get_logger().error("[rosbridge] 연결 실패!")
+            return
+
+        # ── rosbridge 토픽 (노트북B 방향) ─────────────────
+        # NUC → 노트북B
+        self.rb_pub_stt = roslibpy.Topic(
+            self.ros_client, topics['stt_result'], 'std_msgs/String'
         )
-        # tts_stop: node_b에서 STT 수신 시 TTS 중단 신호
-        tts_stop_topic = topics.get('tts_stop', '/cango_master/tts_stop')
-        self.create_subscription(
-            String, tts_stop_topic, self.on_tts_stop, 10
+        self.rb_pub_master2llm = roslibpy.Topic(
+            self.ros_client, topics['master2llm'], 'cango_msgs/LlmRequest'
         )
-        self.pub_stt = self.create_publisher(String, topics['stt_result'], 10)
+        self.rb_pub_sound_trigger = roslibpy.Topic(
+            self.ros_client, topics['sound_trigger'], 'cango_msgs/SoundRequest'
+        )
 
-        # ── 백그라운드 스레드 시작 ────────────────────────
+        # 노트북B → NUC
+        rb_sub_llm2master = roslibpy.Topic(
+            self.ros_client, topics['llm2master'], 'cango_msgs/LlmRequest'
+        )
+        rb_sub_llm2master.subscribe(self.on_rb_llm2master)
+
+        rb_sub_tts = roslibpy.Topic(
+            self.ros_client, topics['tts_input'], 'cango_msgs/SoundRequest'
+        )
+        rb_sub_tts.subscribe(self.on_rb_tts)
+
+        rb_sub_stop = roslibpy.Topic(
+            self.ros_client, topics['tts_stop'], 'std_msgs/String'
+        )
+        rb_sub_stop.subscribe(self.on_rb_tts_stop)
+
+        # ── ROS2 토픽 (마스터 방향) ───────────────────────
+        # 마스터 → NUC
+        self.create_subscription(
+            LlmRequest, topics['master2llm'], self.on_master2llm, 10
+        )
+        self.create_subscription(
+            SoundRequest, topics['sound_trigger'], self.on_master_sound, 10
+        )
+
+        # NUC → 마스터
+        self.pub_llm2master = self.create_publisher(
+            LlmRequest, topics['llm2master'], 10
+        )
+        self.pub_tts_stop = self.create_publisher(
+            String, topics['tts_stop'], 10
+        )
+
+        self.get_logger().info("[rosbridge] 토픽 설정 완료")
+
+        # ── STT 스레드 시작 ───────────────────────────────
         if self.stt_available:
             self.get_logger().info("배경 소음 측정 중...")
             try:
@@ -124,35 +175,78 @@ class VoiceClientNode(Node):
         threading.Thread(target=self._process_tts, daemon=True).start()
 
         mode = "Wake Word 모드" if self.wake_word.enabled else "항상 듣기 모드"
-        audio_mode = "음성" if self.audio_available else "텍스트(스피커 없음)"
-        stt_mode = "마이크" if self.stt_available else "토픽 수신만"
-        self.get_logger().info(f"Voice Client 준비 완료 | {mode} | TTS:{audio_mode} | STT:{stt_mode}")
+        self.get_logger().info(f"NUC 노드 준비 완료 | {mode}")
 
-    # ── TTS 수신 ──────────────────────────────────────────
+    # ── 마스터 → rosbridge(노트북B) 중계 ─────────────────
 
-    def on_tts_input(self, msg: SoundRequest):
-        """LLM→A 방향 TTS 수신. ordered_num=4(커스텀 텍스트)만 처리"""
-        if not msg.request:
+    def on_master2llm(self, msg: LlmRequest):
+        """마스터에서 받은 LlmRequest → rosbridge로 노트북B에 전달"""
+        # 첫 위치 수신 시 초기화 완료 표시
+        if not self.initialized and msg.local_candi1:
+            self.get_logger().info(f"[초기 위치] 마스터에서 수신: {msg.local_candi1}")
+            self.initialized = True
+
+        self.rb_pub_master2llm.publish(roslibpy.Message({
+            'request': msg.request,
+            'local_candi1': msg.local_candi1,
+            'local_candi2': msg.local_candi2,
+            'goalpoint': msg.goalpoint,
+            'waypoints': list(msg.waypoints),
+            'user_start': msg.user_start,
+            'user_interrupt': msg.user_interrupt,
+            'user_finish': msg.user_finish,
+            'map_search': msg.map_search,
+        }))
+
+    def on_master_sound(self, msg: SoundRequest):
+        """마스터에서 받은 SoundRequest(ordered_num=1,2,3) → rosbridge로 노트북B 전달"""
+        if msg.ordered_num == 4:
+            return  # TTS 텍스트는 노트북B→NUC 방향
+        self.rb_pub_sound_trigger.publish(roslibpy.Message({
+            'request': msg.request,
+            'ordered_num': msg.ordered_num,
+            'text': msg.text,
+        }))
+
+    # ── rosbridge(노트북B) → 마스터 중계 ─────────────────
+
+    def on_rb_llm2master(self, msg):
+        """노트북B에서 받은 LlmRequest → ROS2로 마스터에 전달"""
+        ros_msg = LlmRequest()
+        ros_msg.request = msg.get('request', False)
+        ros_msg.local_candi1 = msg.get('local_candi1', '')
+        ros_msg.local_candi2 = msg.get('local_candi2', '')
+        ros_msg.goalpoint = msg.get('goalpoint', '')
+        ros_msg.waypoints = msg.get('waypoints', [])
+        ros_msg.user_start = msg.get('user_start', False)
+        ros_msg.user_interrupt = msg.get('user_interrupt', False)
+        ros_msg.user_finish = msg.get('user_finish', False)
+        ros_msg.map_search = msg.get('map_search', 0)
+        self.pub_llm2master.publish(ros_msg)
+
+    def on_rb_tts(self, msg):
+        """노트북B에서 받은 TTS(ordered_num=4) → 재생"""
+        if not msg.get('request', False):
             return
-        if msg.ordered_num != 4:
+        if msg.get('ordered_num', 0) != 4:
             return
-        text = msg.text.strip()
+        text = msg.get('text', '').strip()
         if text:
+            self.get_logger().info(f"[음성 출력] {text}")
             self.tts_queue.put(text)
 
-    def on_tts_stop(self, msg: String):
-        """node_b에서 STT 수신 시 TTS 즉시 중단"""
+    def on_rb_tts_stop(self, msg):
+        """노트북B에서 TTS 중단 신호 수신"""
         if self.is_speaking:
             self.get_logger().info("[TTS 중단 신호 수신]")
             self.interrupt_flag = True
-            # tts_queue 비우기
             while not self.tts_queue.empty():
                 try:
                     self.tts_queue.get_nowait()
                 except:
                     break
 
-    # ── TTS 처리 스레드 ───────────────────────────────────
+    # ── TTS 처리 ──────────────────────────────────────────
 
     def _process_tts(self):
         while self.listening:
@@ -163,10 +257,7 @@ class VoiceClientNode(Node):
                 continue
 
     def _speak(self, text: str):
-        # 마이크/스피커 없어도 항상 터미널에 출력
-        self.get_logger().info(f"[음성 출력] {text}")
         print(f"\n▶ TTS: {text}\n")
-
         if not self.audio_available:
             return
 
@@ -195,7 +286,7 @@ class VoiceClientNode(Node):
         finally:
             self.is_speaking = False
 
-    # ── 항상 듣기 스레드 ──────────────────────────────────
+    # ── STT ───────────────────────────────────────────────
 
     def _always_listen(self):
         self.get_logger().info("[마이크] 항상 듣는 중...")
@@ -225,21 +316,16 @@ class VoiceClientNode(Node):
         except Exception:
             pass
 
-    # ── STT 처리 스레드 ───────────────────────────────────
-
     def _process_speech(self):
         while self.listening:
             try:
                 text = self.speech_queue.get(timeout=0.1)
                 self.get_logger().info(f"[STT 인식] '{text}'")
 
-                is_emergency = any(
-                    w in text.lower() for w in self.emergency_keywords
-                )
+                is_emergency = any(w in text.lower() for w in self.emergency_keywords)
 
                 if is_emergency:
                     if self.is_speaking:
-                        self.get_logger().info("[긴급 중단]")
                         self.interrupt_flag = True
                         while not self.tts_queue.empty():
                             try:
@@ -247,6 +333,10 @@ class VoiceClientNode(Node):
                             except queue.Empty:
                                 break
                         time.sleep(0.2)
+                        # TTS 중단 신호를 마스터에도 전달
+                        stop_msg = String()
+                        stop_msg.data = 'stop'
+                        self.pub_tts_stop.publish(stop_msg)
                     self._publish_stt(text)
                     continue
 
@@ -261,21 +351,20 @@ class VoiceClientNode(Node):
                 continue
 
     def _publish_stt(self, text: str):
-        msg = String()
-        msg.data = text
-        self.pub_stt.publish(msg)
+        self.rb_pub_stt.publish(roslibpy.Message({'data': text}))
         self.get_logger().info(f"[STT→B] '{text}'")
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = VoiceClientNode()
+    node = NucNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
         node.wake_word.print_stats()
+        node.ros_client.terminate()
         node.destroy_node()
         rclpy.shutdown()
 

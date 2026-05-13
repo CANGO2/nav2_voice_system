@@ -1,6 +1,12 @@
 """
 LLM 처리기 - 3단계 흐름에 맞게 프롬프트 분리
 
+[변경사항]
+- DESTINATION_PROMPT에 목적지를 "이름(node_id)" 형식으로 제공
+  → LLM이 항상 node ID를 반환하도록 수정
+- 1단계: 목적지 대화 (DESTINATION_PROMPT)
+- 3단계-SLAM트리거: 위치 안내 생성 (LOCATION_GUIDE_PROMPT)
+- 3단계-사용자 말걸기: 의도 판단 (INTENT_PROMPT)
 """
 
 import os
@@ -315,35 +321,42 @@ class LLMProcessor:
 
     def generate_location_guide(self, current_node_id: str,
                                  robot_x: float, robot_y: float, yaw: float,
-                                 next_node_id: str = None,
-                                 turn_str: str = None) -> str:
-        """
-        위치 안내 생성
-        yaw     : 진입 방향 (이전→현재 벡터, 주변 시설 방향 계산용)
-        turn_str: 다음 꺾을 방향 문자열 (직진/왼쪽/오른쪽, node_b에서 계산해서 전달)
-        """
+                                 next_node_id: str = None) -> str:
         start = time.time()
-        ctx = self.map.get_location_guide_context(current_node_id, robot_x, robot_y, yaw)
+        # full_path에서 이전 노드 찾기
+        full_path = getattr(self, '_current_full_path', None)
+        prev_node_id = None
+        if full_path and current_node_id in full_path:
+            idx = full_path.index(current_node_id)
+            if idx > 0:
+                prev_node_id = full_path[idx - 1]
+        ctx = self.map.get_location_guide_context(current_node_id, robot_x, robot_y, yaw, prev_node_id=prev_node_id)
 
         if not ctx:
             return f"{self.map.get_display_name(current_node_id)} 근처입니다"
 
-        # 다음 방향: turn_str이 있으면 그대로 사용 (정확하게 계산된 값)
+        # 다음 방향 계산 (yaw 대신 경로 기반 꺾음 방향 사용)
+        # prev_node → current_node → next_node 벡터로 좌/우/직진 판별
         next_direction = "정보 없음"
-        if turn_str and next_node_id:
+        if next_node_id and next_node_id != current_node_id:
             next_label = self.map.get_display_name(next_node_id)
-            next_direction = f"{turn_str}으로 이동 ({next_label} 방향)"
-        elif next_node_id and next_node_id != current_node_id:
-            # fallback: 기존 방식
-            next_coords = self.map.get_node_coords(next_node_id)
-            if next_coords:
-                dir_str = self.map.calc_feature_direction(
-                    robot_x, robot_y, yaw, list(next_coords)
-                )
-                next_label = self.map.get_display_name(next_node_id)
-                next_direction = f"{dir_str}으로 이동 ({next_label} 방향)"
+            # full_path에서 current의 이전 노드 찾기
+            full_path = getattr(self, '_current_full_path', None)
+            prev_node_id = None
+            if full_path and current_node_id in full_path:
+                idx = full_path.index(current_node_id)
+                if idx > 0:
+                    prev_node_id = full_path[idx - 1]
 
-        # 주변 시설 (진입 방향 yaw 기준으로 계산됨)
+            if prev_node_id and prev_node_id != current_node_id:
+                # prev → current → next 꺾음 방향 계산
+                turn = self.map._calc_turn_at_node(prev_node_id, current_node_id, next_node_id)
+                next_direction = f"{turn}으로 이동 ({next_label} 방향)"
+            else:
+                # 이전 노드 없으면 직진(앞으로)으로 처리
+                next_direction = f"앞으로 이동 ({next_label} 방향)"
+
+        # 주변 시설
         nearby_text = ""
         for feat in ctx.get('nearby_features', []):
             direction = feat.get('direction', '')
@@ -382,16 +395,8 @@ class LLMProcessor:
 
         start = time.time()
         directions = self.map.get_path_directions(path)
-        # 경로 요약에서 출발/도착은 node label 우선 사용
-        # (hall_203 → "CU 편의점" 대신 "203호 앞" 같은 위치 표현이 더 자연스러움)
-        def _node_label(node_id):
-            node = self.map.nodes.get(node_id)
-            if node:
-                return node.get('label', node_id)
-            return self.map.get_display_name(node_id)
-
-        start_label = _node_label(path[0])
-        goal_label = self.map.get_display_name(path[-1])  # 도착은 시설 이름
+        start_label = self.map.get_display_name(path[0])
+        goal_label = self.map.get_display_name(path[-1])
 
         wp_lines = []
         for d in directions:
@@ -513,18 +518,19 @@ class LLMProcessor:
                     "map_search": 0, "unavailable": False, "reason": "", "response": ""}
 
         if state == 'waiting_confirm':
-            if any(w in t for w in ['네', '예', '응', '좋아', '출발', '시작', '그래', '맞아', '어', '가줘', '안내해', '출발해']):
+            if any(w in t for w in ['네', '예', '응', '좋아', '출발', '시작', '그래', '맞아', '어',
+                                     '가줘', '안내해', '출발해', '가자', '출발할게', '가겠어']):
                 return {"intent": "confirm_yes", "goalpoint": None, "waypoints": [],
                         "map_search": 0, "unavailable": False, "reason": "", "response": ""}
-            if any(w in t for w in ['아니', '싫어', '안돼', '됐어', '다시', '말고', '취소']):
+            if any(w in t for w in ['아니', '싫어', '안돼', '됐어', '다시', '말고', '취소', '안할']):
                 return {"intent": "confirm_no", "goalpoint": None, "waypoints": [],
                         "map_search": 0, "unavailable": False, "reason": "", "response": ""}
 
         if state == 'waiting_arrival':
-            if any(w in t for w in ['아니', '괜찮아', '됐어', '없어', '필요없어', '끝', '종료']):
+            if any(w in t for w in ['아니', '괜찮아', '됐어', '없어', '필요없어']):
                 return {"intent": "arrival_response_no", "goalpoint": None, "waypoints": [],
                         "map_search": 0, "unavailable": False, "reason": "", "response": ""}
-            if any(w in t for w in ['있어', '응', '네', '더', '또', '다른']):
+            if any(w in t for w in ['있어', '응', '네', '더']):
                 return {"intent": "arrival_response_yes", "goalpoint": None, "waypoints": [],
                         "map_search": 0, "unavailable": False, "reason": "", "response": ""}
 

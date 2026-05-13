@@ -1,7 +1,11 @@
 """
-맵 매니저 - nuri.json 기반
-노드 조회, BFS 경로 탐색, 벡터 외적 방향 계산, 주변 시설 조회
+맵 매니저 - nuri.json 기반 (새 구조 지원)
 
+[변경사항]
+- edges: from/to → start/end (둘 다 지원)
+- features 없음: facility/room 타입 노드에서 시설 정보 추출
+- label 없음: node id에서 자동으로 이름 생성
+- range 필드 예외 처리 (open_space 타입)
 """
 
 import os
@@ -28,46 +32,95 @@ class MapManager:
         self._position_history: List[Tuple[float, float]] = []
         self._load()
 
+    def _id_to_label(self, node_id: str) -> str:
+        """node id → 시각장애인 안내에 적합한 자연스러운 한국어"""
+        label_map = {
+            'hall_left_top':        '왼쪽 복도 위쪽',
+            'hall_left_mid':        '왼쪽 복도 중간',
+            'hall_left_bottom':     '왼쪽 복도 아래',
+            'hall_right_top':       '오른쪽 복도 위쪽',
+            'hall_right_mid':       '오른쪽 복도 중간',
+            'hall_right_bottom':    '오른쪽 복도 아래',
+            'hall_left_top_end':    '왼쪽 위 끝',
+            'hall_left_bottom_end': '왼쪽 아래 끝',
+            'hall_right_top_end':   '오른쪽 위 끝',
+            'hall_공터_center':     '공터 중앙',
+            'hall_317': '317호 앞',
+            'hall_318': '318호 앞',
+            'hall_319': '319호 앞',
+            'hall_320': '320호 앞',
+            'hall_321': '321호 앞',
+            'hall_322': '322호 앞',
+            'hall_화장실_좌':     '왼쪽 화장실',
+            'hall_화장실_우':     '오른쪽 화장실',
+            'hall_엘리베이터_좌': '왼쪽 엘리베이터',
+            'hall_엘리베이터_우': '오른쪽 엘리베이터',
+            'hall_계단_좌':       '왼쪽 계단',
+            'hall_계단_우':       '오른쪽 계단',
+            'hall_산학협력단':    '산학협력단',
+        }
+        if node_id in label_map:
+            return label_map[node_id]
+        name = node_id
+        if name.startswith('hall_'):
+            name = name[5:]
+        name = name.replace('_', ' ')
+        return name
+
     def _load(self):
         with open(self.map_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
         for node in data.get('nodes', []):
             node_id = node['id']
-            coords = node.get('coords', [0, 0])
-            if coords and isinstance(coords[0], list):
-                xs = [c[0] for c in coords]
-                ys = [c[1] for c in coords]
-                coords = [sum(xs)/len(xs), sum(ys)/len(ys)]
+            node_type = node.get('type', 'corridor')
+
+            # coords = [x, y] 그대로 사용
+            if 'range' in node:
+                r = node['range']
+                cx = (r[0][0] + r[1][0]) / 2
+                cy = (r[0][1] + r[1][1]) / 2
+                coords = [cx, cy]
+            else:
+                coords = list(node.get('coords', [0, 0]))
+
+            label = node.get('label', self._id_to_label(node_id))
+
             self.nodes[node_id] = {
-                'type': node.get('type', ''),
+                'type': node_type,
                 'coords': coords,
-                'label': node.get('label', node_id),
+                'label': label,
             }
 
+            # facility/room 타입은 features로도 등록
+            if node_type in ('facility', 'room'):
+                feat = {
+                    'name': label,
+                    'type': node_type,
+                    'feature_coords': coords,
+                    'connected_node': node_id,
+                }
+                self.features.append(feat)
+                self.feature_name_index[label.lower()] = node_id
+                self.feature_name_index[node_id.lower()] = node_id
+                self.feature_type_index.setdefault(node_type, []).append(node_id)
+
+                # 키워드 인덱싱 (부분 매칭용)
+                for kw in label.split():
+                    if len(kw) > 1:
+                        self.feature_name_index.setdefault(kw.lower(), node_id)
+
+        # edges 로드 (start/end 또는 from/to 둘 다 지원)
         for edge in data.get('edges', []):
-            self.edges.append(edge)
-            src = edge.get('from', edge.get('start', ''))
-            dst = edge.get('to', edge.get('end', ''))
+            src = edge.get('start') or edge.get('from', '')
+            dst = edge.get('end') or edge.get('to', '')
             if src and dst:
+                self.edges.append({'from': src, 'to': dst})
                 self.adjacency.setdefault(src, []).append(dst)
                 self.adjacency.setdefault(dst, []).append(src)
 
-        for feat in data.get('features', []):
-            self.features.append(feat)
-            name = feat.get('name', '')
-            node_id = feat.get('connected_node', '')
-            feat_type = feat.get('type', '')
-            if name:
-                self.feature_name_index[name] = node_id
-                self.feature_name_index[name.lower()] = node_id
-            if feat_type:
-                self.feature_type_index.setdefault(feat_type, []).append(node_id)
-
-        print(f"[MapManager] nuri.json 로드 완료: "
-              f"노드 {len(self.nodes)}개 / "
-              f"엣지 {len(self.edges)}개 / "
-              f"시설 {len(self.features)}개")
+        print(f"[MapManager] 로드 완료: 노드 {len(self.nodes)}개 / "
+              f"엣지 {len(self.edges)}개 / 시설 {len(self.features)}개")
 
     def reload(self):
         self.nodes.clear()
@@ -91,64 +144,55 @@ class MapManager:
         return None
 
     def get_display_name(self, node_id: str) -> str:
-        """node_id → 사람이 읽기 좋은 이름
-        우선순위: 시설(화장실/엘리베이터 등) > 강의실/사무실 > node label
-        """
-        priority_types = ['화장실', '엘리베이터', '편의점', '출입구', '계단', '내리막길']
-
-        for feat in self.features:
-            if feat.get('connected_node') == node_id:
-                if feat.get('type') in priority_types:
-                    return feat['name']
-
-        for feat in self.features:
-            if feat.get('connected_node') == node_id:
-                return feat['name']
-
         node = self.nodes.get(node_id)
-        if node:
-            return node.get('label', node_id)
-        return node_id
+        if not node:
+            return node_id
+        return node.get('label', self._id_to_label(node_id))
 
     def get_all_destinations(self) -> List[str]:
-        excluded_keywords = ['접근금지', '금지구역']
+        """목적지로 사용 가능한 시설/방 이름 목록"""
+        excluded_keywords = ['접근금지', '금지', 'end']
         names = []
-        for feat in self.features:
-            name = feat.get('name', '')
-            if any(k in name for k in excluded_keywords):
-                continue
-            if name:
-                names.append(name)
+        for node_id, node in self.nodes.items():
+            if node.get('type') in ('facility', 'room'):
+                label = node.get('label', self._id_to_label(node_id))
+                if any(k in label for k in excluded_keywords):
+                    continue
+                if label:
+                    names.append(label)
         return names
 
     def find_node_by_name(self, query: str) -> Optional[str]:
         query_lower = query.lower().strip()
 
+        # 정확 매칭
         if query_lower in self.feature_name_index:
             return self.feature_name_index[query_lower]
 
+        # 포함 매칭
         for name, node_id in self.feature_name_index.items():
             if query_lower in name or name in query_lower:
                 return node_id
 
-        nums = re.findall(r'\d{3}', query)
+        # 숫자 매칭
+        nums = re.findall(r'\d+', query)
         for num in nums:
             for name, node_id in self.feature_name_index.items():
                 if num in name:
                     return node_id
 
+        # 키워드 매칭
         type_keywords = {
-            '화장실': '화장실',
-            '엘리베이터': '엘리베이터',
-            '편의점': 'cu 편의점',
-            'cu': 'cu 편의점',
-            '계단': '계단',
-            '출입구': '외부 출입구',
-            '출구': '외부 출입구',
+            '화장실': ['화장실 좌', '화장실 우'],
+            '엘리베이터': ['엘리베이터 좌', '엘리베이터 우'],
+            '계단': ['계단 좌', '계단 우'],
+            '산학': ['산학협력단'],
         }
-        for kw, feat_name in type_keywords.items():
-            if kw in query_lower and feat_name in self.feature_name_index:
-                return self.feature_name_index[feat_name]
+        for kw, labels in type_keywords.items():
+            if kw in query_lower:
+                for label in labels:
+                    if label.lower() in self.feature_name_index:
+                        return self.feature_name_index[label.lower()]
 
         return None
 
@@ -168,13 +212,24 @@ class MapManager:
     # ── 주변 시설 조회 ────────────────────────────────────────
 
     def get_nearby_features(self, node_id: str) -> List[Dict]:
+        """현재 노드와 인접 노드의 facility/room 조회"""
         nearby = []
-        for feat in self.features:
-            if feat.get('connected_node') == node_id:
+        node = self.nodes.get(node_id)
+        if node and node.get('type') in ('facility', 'room'):
+            nearby.append({
+                'name': node.get('label', self._id_to_label(node_id)),
+                'type': node.get('type'),
+                'feature_coords': node['coords'],
+                'direction': None,
+            })
+
+        for nb_id in self.adjacency.get(node_id, []):
+            nb_node = self.nodes.get(nb_id)
+            if nb_node and nb_node.get('type') in ('facility', 'room'):
                 nearby.append({
-                    'name': feat['name'],
-                    'type': feat['type'],
-                    'feature_coords': feat.get('feature_coords'),
+                    'name': nb_node.get('label', self._id_to_label(nb_id)),
+                    'type': nb_node.get('type'),
+                    'feature_coords': nb_node['coords'],
                     'direction': None,
                 })
         return nearby
@@ -182,20 +237,32 @@ class MapManager:
     def get_location_guide_context(
         self,
         current_node_id: str,
-        robot_x: float, robot_y: float, yaw: float
+        robot_x: float, robot_y: float, yaw: float,
+        prev_node_id: str = None
     ) -> Dict:
         node = self.nodes.get(current_node_id)
         if not node:
             return {}
 
-        node_label = node.get('label', current_node_id)
+        node_label = node.get('label', self._id_to_label(current_node_id))
         nearby = self.get_nearby_features(current_node_id)
+
+        # 이동 방향 계산: prev → current 벡터로 yaw 대신 사용
+        effective_yaw = yaw
+        if prev_node_id and prev_node_id != current_node_id:
+            pc = self.get_node_coords(prev_node_id)
+            cc = self.get_node_coords(current_node_id)
+            if pc and cc:
+                dx = cc[0] - pc[0]
+                dy = cc[1] - pc[1]
+                if math.hypot(dx, dy) > 0.001:
+                    effective_yaw = math.atan2(dy, dx)
 
         for feat in nearby:
             fc = feat.get('feature_coords')
             if fc:
                 feat['direction'] = self.calc_feature_direction(
-                    robot_x, robot_y, yaw, fc
+                    robot_x, robot_y, effective_yaw, fc
                 )
 
         return {
@@ -224,8 +291,6 @@ class MapManager:
 
         dir_x = math.cos(yaw)
         dir_y = math.sin(yaw)
-
-        # 외적 z성분: 양수=왼쪽, 음수=오른쪽 (y축 위쪽 기준 표준 좌표계)
         cross = dir_x * to_feat_y - dir_y * to_feat_x
         dot = dir_x * to_feat_x + dir_y * to_feat_y
 
@@ -246,20 +311,10 @@ class MapManager:
         prev_candi: str = None,
         full_path: list = None
     ) -> Tuple[float, float, float]:
-        """
-        현재 위치(x, y)와 진행 방향(yaw) 추정
-
-        우선순위:
-        1. prev_candi → candi1 벡터 (가장 신뢰도 높음)
-        2. candi1 → candi2 벡터
-        3. full_path에서 추정
-        4. 기본값 (위쪽, π/2)
-        """
         c1 = self.get_node_coords(candi1)
         if not c1:
             return 0.0, 0.0, math.pi / 2
 
-        # 위치: candi1과 candi2 중간
         c2 = self.get_node_coords(candi2) if candi2 and candi2 != candi1 else None
         if c2:
             x = (c1[0] + c2[0]) / 2
@@ -267,7 +322,6 @@ class MapManager:
         else:
             x, y = c1[0], c1[1]
 
-        # yaw 계산 우선순위 1: prev_candi → candi1
         if prev_candi and prev_candi != candi1:
             pc = self.get_node_coords(prev_candi)
             if pc:
@@ -276,14 +330,12 @@ class MapManager:
                 if math.hypot(dx, dy) > 0.001:
                     return x, y, math.atan2(dy, dx)
 
-        # yaw 계산 우선순위 2: candi1 → candi2
         if c2:
             dx = c2[0] - c1[0]
             dy = c2[1] - c1[1]
             if math.hypot(dx, dy) > 0.001:
                 return x, y, math.atan2(dy, dx)
 
-        # yaw 계산 우선순위 3: full_path 기반
         yaw = self._estimate_yaw_from_path(candi1, full_path)
         return x, y, yaw
 
@@ -316,7 +368,6 @@ class MapManager:
                 dy = nb_c[1] - curr_c[1]
                 if math.hypot(dx, dy) > 0.001:
                     return math.atan2(dy, dx)
-
         return math.pi / 2
 
     def get_robot_yaw(self, x: float, y: float, w: float) -> float:
@@ -367,8 +418,7 @@ class MapManager:
             for neighbor in self.adjacency.get(current, []):
                 if neighbor in visited:
                     continue
-                neighbor_type = self.nodes.get(neighbor, {}).get('type', '')
-                if neighbor_type in exclude_types:
+                if self.nodes.get(neighbor, {}).get('type', '') in exclude_types:
                     continue
                 new_dist = dist + 1
                 if neighbor not in distances or new_dist < distances[neighbor]:
@@ -398,9 +448,13 @@ class MapManager:
             elif i == len(path) - 1:
                 turn = "도착"
             else:
-                prev_node = path[i - 1]
-                next_node = path[i + 1]
-                turn = self._calc_turn_at_node(prev_node, node_id, next_node)
+                # 출발점이 endpoint/open_space이면 첫 꺾음은 "직진"으로 처리
+                # (출발점의 진입 방향이 없어서 방향 계산 불가)
+                prev_type = self.nodes.get(path[i-1], {}).get('type', '')
+                if prev_type in ('endpoint', 'open_space'):
+                    turn = "직진"
+                else:
+                    turn = self._calc_turn_at_node(path[i-1], node_id, path[i+1])
 
             directions.append({
                 "node": node_id,
@@ -408,7 +462,6 @@ class MapManager:
                 "direction": turn,
                 "nearby": nearby_names,
             })
-
         return directions
 
     def _calc_turn_at_node(self, prev_node: str, curr_node: str, next_node: str) -> str:
@@ -419,11 +472,8 @@ class MapManager:
         if not p or not c or not n:
             return "직진"
 
-        v1x = c[0] - p[0]
-        v1y = c[1] - p[1]
-        v2x = n[0] - c[0]
-        v2y = n[1] - c[1]
-
+        v1x, v1y = c[0] - p[0], c[1] - p[1]
+        v2x, v2y = n[0] - c[0], n[1] - c[1]
         d1 = math.hypot(v1x, v1y)
         d2 = math.hypot(v2x, v2y)
 
@@ -432,8 +482,8 @@ class MapManager:
 
         cross = v1x * v2y - v1y * v2x
         dot = v1x * v2x + v1y * v2y
+        threshold = 0.50 * d1 * d2  # sin(30°)=0.5, 30도 이하 꺾임은 직진으로 처리
 
-        threshold = 0.15 * d1 * d2
         if abs(cross) < threshold:
             return "직진" if dot > 0 else "유턴"
         elif cross > 0:

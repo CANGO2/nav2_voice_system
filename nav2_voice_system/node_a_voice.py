@@ -196,6 +196,7 @@ class NucNode(Node):
             'user_interrupt': msg.user_interrupt,
             'user_finish': msg.user_finish,
             'map_search': msg.map_search,
+            'stand': msg.stand if hasattr(msg, 'stand') else False,
         }))
 
     def on_master_sound(self, msg: SoundRequest):

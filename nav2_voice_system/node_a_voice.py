@@ -29,6 +29,7 @@ import roslibpy
 sys.path.insert(0, os.path.dirname(__file__))
 from wake_word_detector import WakeWordDetector
 
+from ament_index_python.packages import get_package_share_directory
 
 @contextmanager
 def suppress_stderr():
@@ -47,7 +48,7 @@ class NucNode(Node):
         super().__init__('nuc_node')
 
         config_path = os.path.join(
-            os.path.dirname(__file__), '..', 'config', 'system_config.yaml'
+            get_package_share_directory('nav2_voice_system'), 'config', 'system_config.yaml'
         )
         with open(config_path, 'r', encoding='utf-8') as f:
             self.cfg = yaml.safe_load(f)

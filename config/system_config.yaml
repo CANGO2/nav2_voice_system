@@ -3,8 +3,8 @@
 
 topics:
   # master <-> llm
-  master2llm:   /cango_master/master2llm
-  llm2master:   /cango_master/llm2master
+  master2llm:   /cango/master2llm
+  llm2master:   /cango/llm2master
 
   # STT 결과: node_a_voice -> llm
   stt_result:   /stt_result
@@ -13,14 +13,14 @@ topics:
   # - 마스터가 발행: ordered_num=1,2,3 (SLAM 트리거)
   # - LLM이 발행: ordered_num=4 (TTS 커스텀 텍스트)
   # - LLM은 on_sound_trigger에서 ordered_num==4 수신 시 무시 (무한루프 방지)
-  tts_input:    /cango_master/master2sound
-  sound_trigger: /cango_master/master2sound
+  tts_input:    /cango/master2sound
+  sound_trigger: /cango/master2sound
 
   # TTS 중단 신호: node_b → node_a
-  tts_stop: /cango_master/tts_stop
+  tts_stop: /cango/tts_stop
 
   # SLAM 실시간 위치
-  navi2master: /cango_master/navi2master
+  navi2master: /cango/navi2master
 
 speech:
   language: ko-KR
@@ -58,7 +58,3 @@ robot_commands:
   set_destination: "NAVIGATE:{node_id}"
   change_direction: "DIRECTION:{direction}"
   
-  
-rosbridge:
-  host: '100.95.77.76'
-  port: 9090

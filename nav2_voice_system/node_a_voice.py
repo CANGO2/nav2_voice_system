@@ -137,6 +137,11 @@ class NucNode(Node):
         )
         rb_sub_stop.subscribe(self.on_rb_tts_stop)
 
+        rb_sub_ui2sound = roslibpy.Topic(
+            self.ros_client, '/cango/ui2sound', 'std_msgs/String'
+        )
+        rb_sub_ui2sound.subscribe(self.on_rb_ui2sound)
+
         # ── ROS2 토픽 (마스터 방향) ───────────────────────
         # 마스터 → NUC
         self.create_subscription(
@@ -148,9 +153,6 @@ class NucNode(Node):
         self.create_subscription(
             String, '/cango/llm_ui_text', self.on_ui_text, 10
         )
-        self.create_subscription(
-            String, '/cango/ui2sound', self.on_ui2sound, 10
-        )
 
         # NUC → 마스터
         self.pub_llm2master = self.create_publisher(
@@ -158,6 +160,9 @@ class NucNode(Node):
         )
         self.pub_tts_stop = self.create_publisher(
             String, topics['tts_stop'], 10
+        )
+        self.pub_ui2sound = self.create_publisher(
+            String, '/cango/ui2sound', 10
         )
 
         self.get_logger().info("[rosbridge] 토픽 설정 완료")
@@ -359,13 +364,15 @@ class NucNode(Node):
             except queue.Empty:
                 continue
 
-    def on_ui2sound(self, msg: String):
-        """UI에서 직접 TTS 텍스트 → 마스터 안 거치고 바로 재생"""
-        text = msg.data.strip()
+    def on_rb_ui2sound(self, msg):
+        """노트북B에서 받은 ui2sound → ROS2로 UI에 relay"""
+        text = msg.get('data', '').strip()
         if not text:
             return
-        self.get_logger().info(f"[UI2SOUND] '{text}'")
-        self.tts_queue.put(text)
+        self.get_logger().info(f"[UI2SOUND→UI] '{text[:30]}'")
+        ros_msg = String()
+        ros_msg.data = text
+        self.pub_ui2sound.publish(ros_msg)
 
     def on_ui_text(self, msg: String):
         """UI 텍스트 입력 → STT와 동일하게 처리"""

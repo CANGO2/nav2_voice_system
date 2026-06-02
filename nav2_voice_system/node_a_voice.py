@@ -148,6 +148,9 @@ class NucNode(Node):
         self.create_subscription(
             String, '/cango/llm_ui_text', self.on_ui_text, 10
         )
+        self.create_subscription(
+            String, '/cango/ui2sound', self.on_ui2sound, 10
+        )
 
         # NUC → 마스터
         self.pub_llm2master = self.create_publisher(
@@ -355,6 +358,14 @@ class NucNode(Node):
 
             except queue.Empty:
                 continue
+
+    def on_ui2sound(self, msg: String):
+        """UI에서 직접 TTS 텍스트 → 마스터 안 거치고 바로 재생"""
+        text = msg.data.strip()
+        if not text:
+            return
+        self.get_logger().info(f"[UI2SOUND] '{text}'")
+        self.tts_queue.put(text)
 
     def on_ui_text(self, msg: String):
         """UI 텍스트 입력 → STT와 동일하게 처리"""

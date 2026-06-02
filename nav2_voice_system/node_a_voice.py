@@ -219,7 +219,7 @@ class NucNode(Node):
             'ordered_num': msg.ordered_num,
             'text': msg.text,
             'user': msg.user if hasattr(msg, 'user') else '',
-            'llm': msg.llm if hasattr(msg, 'llm') else '',
+            'llm_text': msg.llm_text if hasattr(msg, 'llm_text') else '',
         }))
 
     # ── rosbridge(노트북B) → 마스터 중계 ─────────────────
@@ -366,7 +366,6 @@ class NucNode(Node):
 
     def on_rb_sound2ui(self, msg):
         """노트북B에서 받은 sound2ui → ROS2로 UI에 relay"""
-        self.get_logger().info(f"[SOUND2UI RAW] {msg}")
         if not msg.get('request', False):
             return
         ros_msg = SoundRequest()
@@ -374,8 +373,8 @@ class NucNode(Node):
         ros_msg.ordered_num = int(msg.get('ordered_num', 4))
         ros_msg.text = str(msg.get('text', '') or '')
         ros_msg.user = str(msg.get('user', '') or '')
-        ros_msg.llm = str(msg.get('llm', '') or '')
-        self.get_logger().info(f"[SOUND2UI→UI] user='{ros_msg.user[:20]}' llm='{ros_msg.llm[:20]}'")
+        ros_msg.llm_text = str(msg.get('llm_text', '') or '')
+        self.get_logger().info(f"[SOUND2UI→UI] user='{ros_msg.user[:20]}' llm_text='{ros_msg.llm_text[:20]}'")
         self.pub_sound2ui.publish(ros_msg)
 
     def on_ui_text(self, msg: String):

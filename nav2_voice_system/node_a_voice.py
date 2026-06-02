@@ -145,6 +145,9 @@ class NucNode(Node):
         self.create_subscription(
             SoundRequest, topics['sound_trigger'], self.on_master_sound, 10
         )
+        self.create_subscription(
+            String, '/cango/llm_ui_text', self.on_ui_text, 10
+        )
 
         # NUC → 마스터
         self.pub_llm2master = self.create_publisher(
@@ -352,6 +355,22 @@ class NucNode(Node):
 
             except queue.Empty:
                 continue
+
+    def on_ui_text(self, msg: String):
+        """UI 텍스트 입력 → STT와 동일하게 처리"""
+        text = msg.data.strip()
+        if not text:
+            return
+        self.get_logger().info(f"[UI 입력] '{text}'")
+        is_emergency = any(w in text.lower() for w in self.emergency_keywords)
+        if is_emergency and self.is_speaking:
+            self.interrupt_flag = True
+            while not self.tts_queue.empty():
+                try:
+                    self.tts_queue.get_nowait()
+                except queue.Empty:
+                    break
+        self._publish_stt(text)
 
     def _publish_stt(self, text: str):
         self.rb_pub_stt.publish(roslibpy.Message({'data': text}))

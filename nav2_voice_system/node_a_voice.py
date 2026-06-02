@@ -138,7 +138,7 @@ class NucNode(Node):
         rb_sub_stop.subscribe(self.on_rb_tts_stop)
 
         rb_sub_sound2ui = roslibpy.Topic(
-            self.ros_client, '/cango/sound2ui', 'std_msgs/String'
+            self.ros_client, '/cango/sound2ui', 'cango_msgs/SoundRequest'
         )
         rb_sub_sound2ui.subscribe(self.on_rb_sound2ui)
 
@@ -162,7 +162,7 @@ class NucNode(Node):
             String, topics['tts_stop'], 10
         )
         self.pub_sound2ui = self.create_publisher(
-            String, '/cango/sound2ui', 10
+            SoundRequest, '/cango/sound2ui', 10
         )
 
         self.get_logger().info("[rosbridge] 토픽 설정 완료")
@@ -365,13 +365,16 @@ class NucNode(Node):
                 continue
 
     def on_rb_sound2ui(self, msg):
-        """노트북B에서 받은 ui2sound → ROS2로 UI에 relay"""
-        text = msg.get('data', '').strip()
-        if not text:
+        """노트북B에서 받은 sound2ui → ROS2로 UI에 relay"""
+        if not msg.get('request', False):
             return
-        self.get_logger().info(f"[UI2SOUND→UI] '{text[:30]}'")
-        ros_msg = String()
-        ros_msg.data = text
+        ros_msg = SoundRequest()
+        ros_msg.request = True
+        ros_msg.ordered_num = msg.get('ordered_num', 4)
+        ros_msg.text = msg.get('text', '')
+        ros_msg.user = msg.get('user', '')
+        ros_msg.llm = msg.get('llm', '')
+        self.get_logger().info(f"[SOUND2UI→UI] '{ros_msg.llm[:30]}'")
         self.pub_sound2ui.publish(ros_msg)
 
     def on_ui_text(self, msg: String):

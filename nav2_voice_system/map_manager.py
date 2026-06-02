@@ -3,8 +3,13 @@
 
 [변경사항]
 - edges: from/to → start/end (둘 다 지원)
-- features 없음: facility/room 타입 노드에서 시설 정보 추출
-- label 없음: node id에서 자동으로 이름 생성
+- features 배열 파싱 지원:
+    hall_318(복도 노드) ↔ 318호(강의실 feature) 분리 구조
+    connected_node 를 통해 복도 노드와 강의실을 연결
+- _load(): nodes + edges + features 세 배열 모두 로드
+- get_all_destinations(): self.features 기반으로 목적지 목록 반환
+- get_nearby_features(): self.features 기반으로 주변 강의실/시설 조회
+- find_node_by_name(): 강의실 번호 정규식 매칭 추가 (예: "318호", "318호 강의실")
 - range 필드 예외 처리 (open_space 타입)
 """
 
@@ -25,13 +30,22 @@ class MapManager:
         self.map_file = map_file
         self.nodes: Dict[str, Dict] = {}
         self.edges: List[Dict] = []
-        self.features: List[Dict] = []
+        self.features: List[Dict] = []          # JSON features 배열 + node 기반 facility/room
         self.adjacency: Dict[str, List[str]] = {}
-        self.feature_name_index: Dict[str, str] = {}
+        self.feature_name_index: Dict[str, str] = {}   # 이름(소문자) → connected_node id
         self.feature_type_index: Dict[str, List[str]] = {}
+        # node_id → 해당 노드에 연결된 feature 목록 (빠른 조회용)
+        self._node_features: Dict[str, List[Dict]] = {}
         self._position_history: List[Tuple[float, float]] = []
         self._load()
 
+    # ── 좌표 변환 헬퍼 ────────────────────────────────────────
+    @staticmethod
+    def _raw_to_coords(raw: list) -> list:
+        """[row, col] → [x=col, y=-row]"""
+        return [raw[1], -raw[0]]
+
+    # ── node id → 한국어 라벨 ─────────────────────────────────
     def _id_to_label(self, node_id: str) -> str:
         """node id → 시각장애인 안내에 적합한 자연스러운 한국어"""
         label_map = {
@@ -45,6 +59,7 @@ class MapManager:
             'hall_left_bottom_end': '왼쪽 아래 끝',
             'hall_right_top_end':   '오른쪽 위 끝',
             'hall_공터_center':     '공터 중앙',
+            # 복도 노드 라벨 — "~호 앞" 으로 표현 (실제 강의실과 구분)
             'hall_317': '317호 앞',
             'hall_318': '318호 앞',
             'hall_319': '319호 앞',
@@ -64,53 +79,43 @@ class MapManager:
         name = node_id
         if name.startswith('hall_'):
             name = name[5:]
-        name = name.replace('_', ' ')
-        return name
+        return name.replace('_', ' ')
 
+    # ── 로드 ─────────────────────────────────────────────────
     def _load(self):
         with open(self.map_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
+        # ── 1) nodes ──────────────────────────────────────────
         for node in data.get('nodes', []):
             node_id = node['id']
             node_type = node.get('type', 'corridor')
 
-            # coords = [x, y] 그대로 사용
             if 'range' in node:
                 r = node['range']
-                cx = (r[0][0] + r[1][0]) / 2
-                cy = (r[0][1] + r[1][1]) / 2
-                coords = [cx, cy]
+                row = (r[0][0] + r[1][0]) / 2
+                col = (r[0][1] + r[1][1]) / 2
+                coords = [col, -row]
             else:
-                coords = list(node.get('coords', [0, 0]))
+                coords = self._raw_to_coords(node.get('coords', [0, 0]))
 
             label = node.get('label', self._id_to_label(node_id))
-
             self.nodes[node_id] = {
                 'type': node_type,
                 'coords': coords,
                 'label': label,
             }
 
-            # facility/room 타입은 features로도 등록
+            # facility/room 타입 노드는 feature로도 등록 (산학협력단, 화장실 등)
             if node_type in ('facility', 'room'):
-                feat = {
-                    'name': label,
-                    'type': node_type,
-                    'feature_coords': coords,
-                    'connected_node': node_id,
-                }
-                self.features.append(feat)
-                self.feature_name_index[label.lower()] = node_id
-                self.feature_name_index[node_id.lower()] = node_id
-                self.feature_type_index.setdefault(node_type, []).append(node_id)
+                self._register_feature(
+                    name=label,
+                    feat_type=node_type,
+                    feat_coords=coords,
+                    connected_node=node_id,
+                )
 
-                # 키워드 인덱싱 (부분 매칭용)
-                for kw in label.split():
-                    if len(kw) > 1:
-                        self.feature_name_index.setdefault(kw.lower(), node_id)
-
-        # edges 로드 (start/end 또는 from/to 둘 다 지원)
+        # ── 2) edges ──────────────────────────────────────────
         for edge in data.get('edges', []):
             src = edge.get('start') or edge.get('from', '')
             dst = edge.get('end') or edge.get('to', '')
@@ -119,8 +124,68 @@ class MapManager:
                 self.adjacency.setdefault(src, []).append(dst)
                 self.adjacency.setdefault(dst, []).append(src)
 
+        # ── 3) features (강의실 등 별도 정의) ─────────────────
+        for feat in data.get('features', []):
+            name        = feat.get('name', '').strip()
+            node_id     = feat.get('connected_node', '')
+            feat_type   = feat.get('type', feat.get('types', 'room'))
+            raw_coords  = feat.get('coords')
+
+            if not name or not node_id:
+                continue
+            if node_id not in self.nodes:
+                print(f"[MapManager] 경고: feature '{name}'의 connected_node "
+                      f"'{node_id}'가 nodes에 없습니다.")
+                continue
+
+            feat_coords = (self._raw_to_coords(raw_coords)
+                           if raw_coords else self.nodes[node_id]['coords'])
+
+            self._register_feature(
+                name=name,
+                feat_type=feat_type,
+                feat_coords=feat_coords,
+                connected_node=node_id,
+            )
+
         print(f"[MapManager] 로드 완료: 노드 {len(self.nodes)}개 / "
-              f"엣지 {len(self.edges)}개 / 시설 {len(self.features)}개")
+              f"엣지 {len(self.edges)}개 / 시설·강의실 {len(self.features)}개")
+
+    def _register_feature(self, name: str, feat_type: str,
+                           feat_coords: list, connected_node: str):
+        """feature 하나를 self.features / feature_name_index / _node_features 에 등록"""
+        # 중복 방지 (같은 connected_node + 같은 name)
+        if any(f['connected_node'] == connected_node and f['name'] == name
+               for f in self.features):
+            return
+
+        feat = {
+            'name': name,
+            'type': feat_type,
+            'feature_coords': feat_coords,
+            'connected_node': connected_node,
+        }
+        self.features.append(feat)
+        self._node_features.setdefault(connected_node, []).append(feat)
+        self.feature_type_index.setdefault(feat_type, []).append(connected_node)
+
+        # ── 인덱싱 ──────────────────────────────────────────
+        # 이름 전체
+        self.feature_name_index[name.lower()] = connected_node
+        # node_id 자체도 검색 가능하게
+        self.feature_name_index.setdefault(connected_node.lower(), connected_node)
+
+        # 단어 단위 키워드
+        for kw in name.split():
+            if len(kw) > 1:
+                self.feature_name_index.setdefault(kw.lower(), connected_node)
+
+        # 강의실 번호 별칭: "318호" → "318", "318번", "318호 강의실", "318강의실"
+        m = re.match(r'^(\d{3})호?$', name.strip())
+        if m:
+            num = m.group(1)
+            for alias in [num, f'{num}번', f'{num}호 강의실', f'{num}강의실']:
+                self.feature_name_index.setdefault(alias, connected_node)
 
     def reload(self):
         self.nodes.clear()
@@ -129,6 +194,7 @@ class MapManager:
         self.adjacency.clear()
         self.feature_name_index.clear()
         self.feature_type_index.clear()
+        self._node_features.clear()
         self._load()
 
     # ── 기본 조회 ─────────────────────────────────────────────
@@ -150,49 +216,98 @@ class MapManager:
         return node.get('label', self._id_to_label(node_id))
 
     def get_all_destinations(self) -> List[str]:
-        """목적지로 사용 가능한 시설/방 이름 목록"""
-        excluded_keywords = ['접근금지', '금지', 'end']
+        """목적지로 사용 가능한 이름 목록 (features 배열 기반)"""
+        excluded = ['접근금지', '금지', 'end']
+        seen = set()
         names = []
-        for node_id, node in self.nodes.items():
-            if node.get('type') in ('facility', 'room'):
-                label = node.get('label', self._id_to_label(node_id))
-                if any(k in label for k in excluded_keywords):
-                    continue
-                if label:
-                    names.append(label)
+        for feat in self.features:
+            name = feat.get('name', '')
+            if not name or any(k in name for k in excluded):
+                continue
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
         return names
 
-    def find_node_by_name(self, query: str) -> Optional[str]:
+    # ── 시설·강의실 검색 ──────────────────────────────────────
+
+    def find_nearest_facility(self, facility: str, current_node: str) -> Optional[str]:
+        """현재 위치에서 키워드와 일치하는 가장 가까운 feature의 connected_node 반환"""
+        curr_c = self.get_node_coords(current_node) if current_node else None
+        candidates = []
+        for feat in self.features:
+            if facility in feat['name'].lower() or facility in feat['name']:
+                c = self.get_node_coords(feat['connected_node'])
+                if c:
+                    dist = (math.hypot(c[0] - curr_c[0], c[1] - curr_c[1])
+                            if curr_c else 0)
+                    candidates.append((dist, feat['connected_node']))
+        if candidates:
+            candidates.sort(key=lambda x: x[0])
+            return candidates[0][1]
+        return None
+
+    def find_node_by_name(self, query: str, current_node: str = None) -> Optional[str]:
+        """이름/키워드로 목적지 node_id(connected_node) 검색"""
         query_lower = query.lower().strip()
 
-        # 정확 매칭
+        # ── 1) 강의실 번호 정규식 매칭 (최우선) ──────────────
+        # 지원 패턴: "318호", "318호 강의실", "318번", "318" (3자리)
+        m = re.search(r'(\d{3})\s*(?:호|번|강의실)?', query_lower)
+        if m:
+            num = m.group(1)
+            # feature_name_index 에서 숫자로 검색
+            for alias in [f'{num}호', num, f'{num}번', f'{num}호 강의실']:
+                if alias in self.feature_name_index:
+                    return self.feature_name_index[alias]
+            # 직접 node id 확인
+            candidate_id = f'hall_{num}'
+            if candidate_id in self.nodes:
+                return candidate_id
+
+        # ── 2) 시설 키워드 (화장실 / 엘리베이터 / 계단) ──────
+        right_kw = ['오른쪽', '우측', '오른', 'right']
+        left_kw  = ['왼쪽', '좌측', '왼', 'left']
+
+        facility_aliases = {
+            '화장실':   ['화장실'],
+            '엘리베이터': ['엘리베이터', '엘베', '승강기'],
+            '계단':     ['계단'],
+        }
+        for facility, aliases in facility_aliases.items():
+            if any(a in query_lower for a in aliases):
+                if any(k in query_lower for k in right_kw):
+                    for cand in [f'오른쪽 {facility}', f'{facility} 우']:
+                        if cand.lower() in self.feature_name_index:
+                            return self.feature_name_index[cand.lower()]
+                elif any(k in query_lower for k in left_kw):
+                    for cand in [f'왼쪽 {facility}', f'{facility} 좌']:
+                        if cand.lower() in self.feature_name_index:
+                            return self.feature_name_index[cand.lower()]
+                else:
+                    return self.find_nearest_facility(facility, current_node)
+
+        # ── 3) 산학협력단 ──────────────────────────────────
+        if '산학' in query_lower:
+            node_id = self.feature_name_index.get('산학협력단')
+            if node_id:
+                return node_id
+
+        # ── 4) 정확 매칭 ───────────────────────────────────
         if query_lower in self.feature_name_index:
             return self.feature_name_index[query_lower]
 
-        # 포함 매칭
+        # ── 5) 포함 매칭 (3글자 이상) ──────────────────────
         for name, node_id in self.feature_name_index.items():
-            if query_lower in name or name in query_lower:
+            if name in query_lower and len(name) >= 3:
                 return node_id
 
-        # 숫자 매칭
+        # ── 6) 숫자 fallback ───────────────────────────────
         nums = re.findall(r'\d+', query)
         for num in nums:
             for name, node_id in self.feature_name_index.items():
                 if num in name:
                     return node_id
-
-        # 키워드 매칭
-        type_keywords = {
-            '화장실': ['화장실 좌', '화장실 우'],
-            '엘리베이터': ['엘리베이터 좌', '엘리베이터 우'],
-            '계단': ['계단 좌', '계단 우'],
-            '산학': ['산학협력단'],
-        }
-        for kw, labels in type_keywords.items():
-            if kw in query_lower:
-                for label in labels:
-                    if label.lower() in self.feature_name_index:
-                        return self.feature_name_index[label.lower()]
 
         return None
 
@@ -212,26 +327,26 @@ class MapManager:
     # ── 주변 시설 조회 ────────────────────────────────────────
 
     def get_nearby_features(self, node_id: str) -> List[Dict]:
-        """현재 노드와 인접 노드의 facility/room 조회"""
+        """현재 노드 및 인접 노드에 연결된 features 반환"""
         nearby = []
-        node = self.nodes.get(node_id)
-        if node and node.get('type') in ('facility', 'room'):
-            nearby.append({
-                'name': node.get('label', self._id_to_label(node_id)),
-                'type': node.get('type'),
-                'feature_coords': node['coords'],
-                'direction': None,
-            })
+        seen_names = set()
 
+        def _add_feats(nid: str):
+            # features 배열에서 connected_node 기준으로 조회
+            for feat in self._node_features.get(nid, []):
+                if feat['name'] not in seen_names:
+                    seen_names.add(feat['name'])
+                    nearby.append({
+                        'name': feat['name'],
+                        'type': feat['type'],
+                        'feature_coords': feat['feature_coords'],
+                        'direction': None,
+                    })
+
+        _add_feats(node_id)
         for nb_id in self.adjacency.get(node_id, []):
-            nb_node = self.nodes.get(nb_id)
-            if nb_node and nb_node.get('type') in ('facility', 'room'):
-                nearby.append({
-                    'name': nb_node.get('label', self._id_to_label(nb_id)),
-                    'type': nb_node.get('type'),
-                    'feature_coords': nb_node['coords'],
-                    'direction': None,
-                })
+            _add_feats(nb_id)
+
         return nearby
 
     def get_location_guide_context(
@@ -247,7 +362,6 @@ class MapManager:
         node_label = node.get('label', self._id_to_label(current_node_id))
         nearby = self.get_nearby_features(current_node_id)
 
-        # 이동 방향 계산: prev → current 벡터로 yaw 대신 사용
         effective_yaw = yaw
         if prev_node_id and prev_node_id != current_node_id:
             pc = self.get_node_coords(prev_node_id)
@@ -292,7 +406,7 @@ class MapManager:
         dir_x = math.cos(yaw)
         dir_y = math.sin(yaw)
         cross = dir_x * to_feat_y - dir_y * to_feat_x
-        dot = dir_x * to_feat_x + dir_y * to_feat_y
+        dot   = dir_x * to_feat_x + dir_y * to_feat_y
 
         threshold = 0.2 * dist
         if abs(cross) < threshold:
@@ -362,7 +476,7 @@ class MapManager:
         neighbors = self.adjacency.get(node_id, [])
         if neighbors:
             curr_c = self.get_node_coords(node_id)
-            nb_c = self.get_node_coords(neighbors[0])
+            nb_c   = self.get_node_coords(neighbors[0])
             if curr_c and nb_c:
                 dx = nb_c[0] - curr_c[0]
                 dy = nb_c[1] - curr_c[1]
@@ -439,7 +553,7 @@ class MapManager:
 
         directions = []
         for i, node_id in enumerate(path):
-            label = self.get_display_name(node_id)
+            label  = self.get_display_name(node_id)
             nearby = self.get_nearby_features(node_id)
             nearby_names = [f["name"] for f in nearby]
 
@@ -448,19 +562,30 @@ class MapManager:
             elif i == len(path) - 1:
                 turn = "도착"
             else:
-                # 출발점이 endpoint/open_space이면 첫 꺾음은 "직진"으로 처리
-                # (출발점의 진입 방향이 없어서 방향 계산 불가)
                 prev_type = self.nodes.get(path[i-1], {}).get('type', '')
-                if prev_type in ('endpoint', 'open_space'):
+                if prev_type in ('endpoint',):
                     turn = "직진"
                 else:
-                    turn = self._calc_turn_at_node(path[i-1], node_id, path[i+1])
+                    # 이전 노드와 현재 노드가 같은 좌표면 더 이전 노드로 거슬러서 계산
+                    import math as _math
+                    prev_id = path[i-1]
+                    pc = self.get_node_coords(prev_id)
+                    cc = self.get_node_coords(node_id)
+                    if pc and cc and _math.hypot(cc[0]-pc[0], cc[1]-pc[1]) < 0.001:
+                        j = i - 1
+                        while j >= 0:
+                            prev_id = path[j]
+                            pc = self.get_node_coords(prev_id)
+                            if pc and _math.hypot(cc[0]-pc[0], cc[1]-pc[1]) > 0.001:
+                                break
+                            j -= 1
+                    turn = self._calc_turn_at_node(prev_id, node_id, path[i+1])
 
             directions.append({
-                "node": node_id,
-                "label": label,
+                "node":      node_id,
+                "label":     label,
                 "direction": turn,
-                "nearby": nearby_names,
+                "nearby":    nearby_names,
             })
         return directions
 
@@ -481,8 +606,8 @@ class MapManager:
             return "직진"
 
         cross = v1x * v2y - v1y * v2x
-        dot = v1x * v2x + v1y * v2y
-        threshold = 0.50 * d1 * d2  # sin(30°)=0.5, 30도 이하 꺾임은 직진으로 처리
+        dot   = v1x * v2x + v1y * v2y
+        threshold = 0.15 * d1 * d2
 
         if abs(cross) < threshold:
             return "직진" if dot > 0 else "유턴"
@@ -514,4 +639,11 @@ class MapManager:
                     if cos_a < 0.85:
                         waypoints.append(curr)
         waypoints.append(path[-1])
+
+        # 중복 좌표 쌍 제거 (목적지 제외)
+        # hall_318=hall_right_top, hall_321=hall_right_bottom, hall_산학협력단=hall_left_bottom
+        goal = path[-1]
+        skip_nodes = {'hall_right_top', 'hall_318', 'hall_right_bottom', 'hall_321', 'hall_산학협력단', 'hall_left_bottom'}
+        waypoints = [w for w in waypoints if w not in skip_nodes or w == goal]
+
         return waypoints

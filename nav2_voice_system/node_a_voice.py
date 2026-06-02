@@ -29,7 +29,6 @@ import roslibpy
 sys.path.insert(0, os.path.dirname(__file__))
 from wake_word_detector import WakeWordDetector
 
-from ament_index_python.packages import get_package_share_directory
 
 @contextmanager
 def suppress_stderr():
@@ -48,7 +47,7 @@ class NucNode(Node):
         super().__init__('nuc_node')
 
         config_path = os.path.join(
-            get_package_share_directory('nav2_voice_system'), 'config', 'system_config.yaml'
+            os.path.dirname(__file__), '..', 'config', 'system_config.yaml'
         )
         with open(config_path, 'r', encoding='utf-8') as f:
             self.cfg = yaml.safe_load(f)
@@ -208,6 +207,8 @@ class NucNode(Node):
             'request': msg.request,
             'ordered_num': msg.ordered_num,
             'text': msg.text,
+            'user': msg.user if hasattr(msg, 'user') else '',
+            'llm': msg.llm if hasattr(msg, 'llm') else '',
         }))
 
     # ── rosbridge(노트북B) → 마스터 중계 ─────────────────

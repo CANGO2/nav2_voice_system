@@ -366,15 +366,16 @@ class NucNode(Node):
 
     def on_rb_sound2ui(self, msg):
         """노트북B에서 받은 sound2ui → ROS2로 UI에 relay"""
+        self.get_logger().info(f"[SOUND2UI RAW] {msg}")
         if not msg.get('request', False):
             return
         ros_msg = SoundRequest()
         ros_msg.request = True
-        ros_msg.ordered_num = msg.get('ordered_num', 4)
-        ros_msg.text = msg.get('text', '')
-        ros_msg.user = msg.get('user', '')
-        ros_msg.llm = msg.get('llm', '')
-        self.get_logger().info(f"[SOUND2UI→UI] '{ros_msg.llm[:30]}'")
+        ros_msg.ordered_num = int(msg.get('ordered_num', 4))
+        ros_msg.text = str(msg.get('text', '') or '')
+        ros_msg.user = str(msg.get('user', '') or '')
+        ros_msg.llm = str(msg.get('llm', '') or '')
+        self.get_logger().info(f"[SOUND2UI→UI] user='{ros_msg.user[:20]}' llm='{ros_msg.llm[:20]}'")
         self.pub_sound2ui.publish(ros_msg)
 
     def on_ui_text(self, msg: String):

@@ -138,7 +138,7 @@ class NucNode(Node):
         rb_sub_stop.subscribe(self.on_rb_tts_stop)
 
         rb_sub_sound2ui = roslibpy.Topic(
-            self.ros_client, '/cango/sound2ui', 'cango_msgs/SoundRequest'
+            self.ros_client, '/cango/sound2ui', ''
         )
         rb_sub_sound2ui.subscribe(self.on_rb_sound2ui)
 
@@ -239,7 +239,7 @@ class NucNode(Node):
         self.pub_llm2master.publish(ros_msg)
 
     def on_rb_tts(self, msg):
-        """노트북B에서 받은 TTS(ordered_num=4) → 재생"""
+        """노트북B에서 받은 TTS(ordered_num=4) → 재생 + UI relay"""
         if not msg.get('request', False):
             return
         if msg.get('ordered_num', 0) != 4:
@@ -248,6 +248,14 @@ class NucNode(Node):
         if text:
             self.get_logger().info(f"[음성 출력] {text}")
             self.tts_queue.put(text)
+            # UI relay
+            ros_msg = SoundRequest()
+            ros_msg.request = True
+            ros_msg.ordered_num = 4
+            ros_msg.text = ''
+            ros_msg.user = str(msg.get('user', '') or '')
+            ros_msg.llm_text = str(msg.get('llm_text', '') or '')
+            self.pub_sound2ui.publish(ros_msg)
 
     def on_rb_tts_stop(self, msg):
         """노트북B에서 TTS 중단 신호 수신"""

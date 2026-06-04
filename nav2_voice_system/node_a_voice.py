@@ -151,7 +151,7 @@ class NucNode(Node):
             SoundRequest, topics['sound_trigger'], self.on_master_sound, 10
         )
         self.create_subscription(
-            String, '/cango/llm_ui_text', self.on_ui_text, 10
+            SoundRequest, '/cango/llm_ui_text', self.on_ui_text, 10
         )
 
         # NUC → 마스터
@@ -385,9 +385,9 @@ class NucNode(Node):
         self.get_logger().info(f"[SOUND2UI→UI] user='{ros_msg.user[:20]}' llm_text='{ros_msg.llm_text[:20]}'")
         self.pub_sound2ui.publish(ros_msg)
 
-    def on_ui_text(self, msg: String):
+    def on_ui_text(self, msg: SoundRequest):
         """UI 텍스트 입력 → STT와 동일하게 처리"""
-        text = msg.data.strip()
+        text = (msg.user or msg.text or "").strip()
         if not text:
             return
         self.get_logger().info(f"[UI 입력] '{text}'")

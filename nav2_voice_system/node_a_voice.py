@@ -80,6 +80,7 @@ class NucNode(Node):
                 self.recognizer.energy_threshold = speech_cfg.get('energy_threshold', 3000)
                 self.recognizer.dynamic_energy_threshold = True
                 self.recognizer.pause_threshold = speech_cfg.get('pause_threshold', 1.2)
+                self.phrase_time_limit = speech_cfg.get('phrase_time_limit', 10)
             self.stt_available = True
             self.get_logger().info("[STT] 마이크 초기화 완료")
         except Exception as e:
@@ -317,7 +318,7 @@ class NucNode(Node):
                 while self.listening:
                     try:
                         audio = self.recognizer.listen(
-                            source, timeout=1, phrase_time_limit=6
+                            source, timeout=1, phrase_time_limit=self.phrase_time_limit
                         )
                         threading.Thread(
                             target=self._recognize,

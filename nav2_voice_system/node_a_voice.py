@@ -139,7 +139,7 @@ class NucNode(Node):
         rb_sub_stop.subscribe(self.on_rb_tts_stop)
 
         rb_sub_sound2ui = roslibpy.Topic(
-            self.ros_client, '/cango/sound2ui', ''
+            self.ros_client, '/cango/sound2ui', 'cango_msgs/SoundRequest'
         )
         rb_sub_sound2ui.subscribe(self.on_rb_sound2ui)
 
